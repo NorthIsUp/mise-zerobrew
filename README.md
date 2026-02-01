@@ -12,12 +12,28 @@ Zerobrew provides significant speed improvements over Homebrew through:
 
 This plugin lets you use zerobrew's speed while managing tools through mise.
 
+## Benchmarks
+
+Tested on macOS (CI runner):
+
+| Package | Homebrew | Zerobrew | Speedup |
+|---------|----------|----------|---------|
+| **Cold install** (no cache) ||||
+| jq | 5.42s | 2.17s | **2.4x** |
+| tree | 4.16s | 0.70s | **5.9x** |
+| **Warm install** (cached) ||||
+| jq | 4.46s | 0.33s | **13.4x** |
+| tree | 3.41s | 0.27s | **12.4x** |
+| wget | 3.87s | 1.05s | **3.6x** |
+
+Run benchmarks locally: `mise run benchmark`
+
 ## Prerequisites
 
 1. Install [mise](https://mise.jdx.dev/getting-started.html)
 2. Install [zerobrew](https://github.com/lucasgelfond/zerobrew):
    ```bash
-   cargo install zerobrew
+   rustup run nightly cargo install --git https://github.com/lucasgelfond/zerobrew
    ```
 
 ## Installation
