@@ -2,7 +2,7 @@
 #MISE description="Run backend plugin tests"
 set -euo pipefail
 
-echo "Testing plugin structure..."
+echo "=== Structure Tests ==="
 
 # Check required files exist
 for file in metadata.lua hooks/backend_list_versions.lua hooks/backend_install.lua hooks/backend_exec_env.lua; do
@@ -15,7 +15,8 @@ for file in metadata.lua hooks/backend_list_versions.lua hooks/backend_install.l
 done
 
 # Check Lua syntax
-echo "Checking Lua syntax..."
+echo ""
+echo "=== Syntax Tests ==="
 for file in metadata.lua hooks/*.lua; do
     if luac -p "$file" 2>/dev/null; then
         echo "✓ $file syntax OK"
@@ -24,4 +25,58 @@ for file in metadata.lua hooks/*.lua; do
     fi
 done
 
-echo "✓ Plugin structure tests passed"
+# Integration tests (only if zb is available)
+echo ""
+echo "=== Integration Tests ==="
+if ! command -v zb &>/dev/null; then
+    echo "⚠ Skipping integration tests (zb not installed)"
+    echo "  Install zerobrew to run full tests"
+    exit 0
+fi
+
+echo "✓ zb found: $(which zb)"
+
+# Link plugin
+echo "Linking plugin..."
+mise plugins link --force zerobrew . 2>/dev/null
+echo "✓ Plugin linked"
+
+# Enable experimental for custom backends
+mise settings experimental=true 2>/dev/null
+
+# Test version listing
+echo "Testing version listing..."
+versions=$(mise ls-remote zerobrew:jq 2>/dev/null | head -5)
+if [[ -n "$versions" ]]; then
+    echo "✓ Version listing works (found: $versions)"
+else
+    echo "✗ Version listing failed"
+    exit 1
+fi
+
+# Test installation
+echo "Testing installation..."
+if mise install zerobrew:jq@latest 2>/dev/null; then
+    echo "✓ Installation succeeded"
+else
+    echo "✗ Installation failed"
+    exit 1
+fi
+
+# Test execution
+echo "Testing execution..."
+version=$(mise exec zerobrew:jq@latest -- jq --version 2>/dev/null)
+if [[ -n "$version" ]]; then
+    echo "✓ Execution works ($version)"
+else
+    echo "✗ Execution failed"
+    exit 1
+fi
+
+# Cleanup
+echo "Cleaning up..."
+mise uninstall zerobrew:jq@latest 2>/dev/null || true
+echo "✓ Cleanup done"
+
+echo ""
+echo "=== All tests passed ==="
