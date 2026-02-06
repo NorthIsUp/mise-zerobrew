@@ -39,14 +39,34 @@ function PLUGIN:BackendInstall(ctx)
     end
 
     if zb_path == "" then
-        error([[
-zerobrew (zb) not found in PATH or mise installs.
+        -- zb not found anywhere -- install it via cargo
+        -- This handles the cold-start case where mise installs zerobrew tools
+        -- in parallel with (or before) the cargo:zb tool.
+        local cargo_check = cmd.exec("which cargo 2>/dev/null || true"):gsub("%s+$", "")
+        if cargo_check == "" then
+            error([[
+zerobrew (zb) not found and cargo is not available to install it.
 
-Install zerobrew first:
-  mise use cargo:https://github.com/lucasgelfond/zerobrew
+Install zerobrew manually:
+  cargo install --git https://github.com/lucasgelfond/zerobrew
 
 For more info: https://github.com/lucasgelfond/zerobrew
 ]])
+        end
+
+        local home = os.getenv("HOME") or ""
+        local cargo_result, cargo_err = cmd.exec(
+            "cargo install --git https://github.com/lucasgelfond/zerobrew 2>&1"
+        )
+        if cargo_err then
+            error("Failed to install zerobrew via cargo: " .. cargo_err)
+        end
+
+        zb_path = home .. "/.cargo/bin/zb"
+        local verify = cmd.exec("test -x '" .. zb_path .. "' && echo found || echo missing")
+        if verify:match("missing") then
+            error("cargo install succeeded but zb binary not found at '" .. zb_path .. "'")
+        end
     end
 
     -- Determine the actual formula name to install
