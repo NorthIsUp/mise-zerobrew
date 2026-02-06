@@ -82,5 +82,17 @@ For more info: https://github.com/lucasgelfond/zerobrew
         error("Failed to install " .. formula .. ": " .. install_err)
     end
 
+    -- Fix Homebrew Cellar dylib paths: bottles have install names like
+    -- opt/<formula>/<version>/lib<name>.dylib, but zerobrew's opt/<formula>
+    -- symlink already points to Cellar/<formula>/<version>/, making the
+    -- resolved path Cellar/<formula>/<version>/<version>/lib<name>.dylib
+    -- which doesn't exist. Create <version> -> . symlinks to fix this.
+    local cellar_dir = quoted_path .. "/prefix/Cellar"
+    local fix_cmd = "for d in " .. cellar_dir .. "/*/*; do "
+        .. "v=$(basename \"$d\"); "
+        .. "[ ! -e \"$d/$v\" ] && ln -s . \"$d/$v\" 2>/dev/null; "
+        .. "done; true"
+    cmd.exec(fix_cmd)
+
     return {}
 end
