@@ -9,8 +9,10 @@ PLUGIN = { -- luacheck: ignore
     author = "kennyg",
     homepage = "https://github.com/kennyg/mise-zerobrew",
     license = "MIT",
+    dependencies = {
+        "github:lucasgelfond/zerobrew",
+    },
     notes = {
-        "Requires zerobrew (zb) to be installed: https://github.com/lucasgelfond/zerobrew",
         "Installs formulae from Homebrew's core tap",
         "Use versioned formulae for version control (e.g., python@3.11, node@20)",
     },

@@ -1,12 +1,17 @@
 -- hooks/backend_install.lua
--- Installs a Homebrew formula via zerobrew
--- Uses isolated ZEROBREW_ROOT per installation for mise compatibility
+-- Installs a Homebrew formula via zerobrew.
+-- Requires cargo:https://github.com/lucasgelfond/zerobrew to be installed
+-- as a mise dependency (declared in metadata.lua).
 
+--- Documentation: https://mise.jdx.dev/backend-plugin-development.html#backendinstall
+--- @param ctx {tool: string, version: string, install_path: string} Context
+--- @return table Empty table on success
 function PLUGIN:BackendInstall(ctx)
-    local tool = ctx.tool
-    local version = ctx.version
+    local tool         = ctx.tool
+    local version      = ctx.version
     local install_path = ctx.install_path
 
+    -- Validate inputs
     if not tool or tool == "" then
         error("Tool name cannot be empty")
     end
@@ -17,87 +22,65 @@ function PLUGIN:BackendInstall(ctx)
         error("Install path cannot be empty")
     end
 
-    local cmd = require("cmd")
+    local cmd  = require("cmd")
+    local file = require("file")
+    local log  = require("log")
+    local json = require("json")
 
-    -- Find zerobrew binary: check PATH first, then mise install locations
-    local zb_path = cmd.exec("which zb 2>/dev/null || true"):gsub("%s+$", "")
-    if zb_path == "" then
-        -- Look in common mise install locations for the cargo-installed zb
-        local home = os.getenv("HOME") or ""
-        local candidates = {
-            home .. "/.local/share/mise/installs/cargo-https-github-com-lucasgelfond-zerobrew/latest/bin/zb",
-            home .. "/.local/share/mise/installs/cargo-https-github-com-lucasgelfond-zerobrew/HEAD/bin/zb",
-            home .. "/.cargo/bin/zb",
-        }
-        for _, candidate in ipairs(candidates) do
-            local check = cmd.exec("test -x '" .. candidate .. "' && echo found || echo missing")
-            if check:match("found") then
-                zb_path = candidate
-                break
-            end
+    -- zb is installed by mise as a dependency (github:lucasgelfond/zerobrew).
+    -- Scan the mise installs dir to find zb regardless of resolved version.
+
+    local home         = os.getenv("HOME") or ""
+    local data_dir     = os.getenv("XDG_DATA_HOME") or file.join_path(home, ".local", "share")
+    local installs_dir = file.join_path(data_dir, "mise", "installs")
+
+    local install_base = ""
+
+    local deps = {
+        [1] = "github-lucasgelfond-zerobrew",
+        [2] = "cargo-https-github-com-lucasgelfond-zerobrew",
+    }
+
+    for _i, dep in pairs(deps) do
+        local dep_path = file.join_path(installs_dir, dep)
+        if file.exists(dep_path) then
+            install_base = dep_path
+            break
         end
     end
 
-    if zb_path == "" then
-        -- zb not found anywhere -- install it via cargo
-        -- This handles the cold-start case where mise installs zerobrew tools
-        -- in parallel with (or before) the cargo:zb tool.
-        local cargo_check = cmd.exec("which cargo 2>/dev/null || true"):gsub("%s+$", "")
-        if cargo_check == "" then
-            error([[
-zerobrew (zb) not found and cargo is not available to install it.
-
-Install zerobrew manually:
-  cargo install --git https://github.com/lucasgelfond/zerobrew
-
-For more info: https://github.com/lucasgelfond/zerobrew
-]])
-        end
-
-        local home = os.getenv("HOME") or ""
-        local cargo_result, cargo_err = cmd.exec(
-            "cargo install --git https://github.com/lucasgelfond/zerobrew 2>&1"
+    if install_base == "" then
+        error(
+            "zerobrew (zb) not found\n"
+            .. "To use the zb plugin zerobrew must be added as a mise tool.\n"
+            .. "Try: mise use 'github:lucasgelfond/zerobrew'"
         )
-        if cargo_err then
-            error("Failed to install zerobrew via cargo: " .. cargo_err)
-        end
-
-        zb_path = home .. "/.cargo/bin/zb"
-        local verify = cmd.exec("test -x '" .. zb_path .. "' && echo found || echo missing")
-        if verify:match("missing") then
-            error("cargo install succeeded but zb binary not found at '" .. zb_path .. "'")
-        end
     end
 
-    -- Determine the actual formula name to install
+    log.debug("zerobrew dependency install base: " .. (install_base or "not found"))
+    
+    -- Determine formula name
     local formula
     if version == "latest" then
-        -- Install the base formula (e.g., "ruby")
         formula = tool
     else
-        -- Install the versioned formula (e.g., "python@3.11")
         formula = tool .. "@" .. version
     end
 
-    -- Validate formula contains only safe characters (alphanumeric, @, -, _, .)
+    log.debug("zerobrew dependency found, installing formula: " .. formula)
+
     if not formula:match("^[%w@%-%._]+$") then
         error("Invalid formula name: " .. formula)
     end
 
-    -- Shell-quote paths in case they contain spaces
     local quoted_path = "'" .. install_path:gsub("'", "'\\''") .. "'"
-    local quoted_zb = "'" .. zb_path:gsub("'", "'\\''") .. "'"
-
-    -- Use --root and --prefix so zb auto-initializes into the install path
-    -- (no need for global /opt/zerobrew or sudo). Pipe "Y" to accept the
-    -- auto-init prompt if this is the first install into this root.
-    local install_cmd = "echo Y | " .. quoted_zb
-        .. " --root " .. quoted_path
+    local install_cmd = "zb --yes"
+        .. " --root "   .. quoted_path
         .. " --prefix " .. quoted_path .. "/prefix"
-        .. " install " .. formula
+        .. " install "  .. formula
 
-    local result, install_err = cmd.exec(install_cmd)
-
+    log.debug("installing: " .. install_cmd)
+    local _, install_err = cmd.exec(install_cmd)
     if install_err then
         error("Failed to install " .. formula .. ": " .. install_err)
     end
@@ -108,11 +91,12 @@ For more info: https://github.com/lucasgelfond/zerobrew
     -- resolved path Cellar/<formula>/<version>/<version>/lib<name>.dylib
     -- which doesn't exist. Create <version> -> . symlinks to fix this.
     local cellar_dir = quoted_path .. "/prefix/Cellar"
-    local fix_cmd = "for d in " .. cellar_dir .. "/*/*; do "
+    cmd.exec(
+        "for d in " .. cellar_dir .. "/*/*; do "
         .. "v=$(basename \"$d\"); "
         .. "[ ! -e \"$d/$v\" ] && ln -s . \"$d/$v\" 2>/dev/null; "
         .. "done; true"
-    cmd.exec(fix_cmd)
+    )
 
     return {}
 end

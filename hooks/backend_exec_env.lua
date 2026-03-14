@@ -1,103 +1,77 @@
 -- hooks/backend_exec_env.lua
--- Sets up environment variables for zerobrew-installed tools
---
--- Because mise overwrites (not appends) non-PATH env vars across tools,
--- we scan ALL installed zerobrew prefixes and return combined values.
--- Every tool's BackendExecEnv returns the same comprehensive set, so it
--- doesn't matter which one "wins" -- they all contain all paths.
+-- Sets up environment variables for zerobrew-installed tools,
+-- mirroring what `zb init` would inject into the shell.
 
 function PLUGIN:BackendExecEnv(ctx)
-    local cmd = require("cmd")
+    local install_path = ctx.install_path
     local file = require("file")
 
-    -- Find all installed zerobrew prefixes
-    local home = os.getenv("HOME") or ""
-    local installs_dir = home .. "/.local/share/mise/installs"
-    local raw = cmd.exec("ls -d " .. installs_dir .. "/zerobrew-*/*/prefix 2>/dev/null || true")
+    -- XDG base dirs
+    local home           = os.getenv("HOME") or ""
+    local xdg_data_home  = os.getenv("XDG_DATA_HOME") or file.join_path(home, ".local", "share")
+    local xdg_bin_home   = os.getenv("XDG_BIN_HOME")  or file.join_path(home, ".local", "bin")
 
-    local prefixes = {}
-    for line in raw:gmatch("[^\n]+") do
-        local trimmed = line:match("^%s*(.-)%s*$")
-        if trimmed and trimmed ~= "" then
-            table.insert(prefixes, trimmed)
-        end
-    end
+    local prefix_path = file.join_path(install_path, "prefix")
+    local bin_path    = file.join_path(prefix_path, "bin")
 
-    -- Collect paths by type
-    local bin_paths = {}
-    local lib_paths = {}
-    local include_paths = {}
-    local pkgconfig_paths = {}
-
-    for _, prefix in ipairs(prefixes) do
-        local bin_dir = file.join_path(prefix, "bin")
-        local lib_dir = file.join_path(prefix, "lib")
-        local include_dir = file.join_path(prefix, "include")
-        local pkgconfig_dir = file.join_path(prefix, "lib", "pkgconfig")
-
-        if file.exists(bin_dir) then
-            table.insert(bin_paths, bin_dir)
-        end
-        if file.exists(lib_dir) then
-            table.insert(lib_paths, lib_dir)
-        end
-        if file.exists(include_dir) then
-            table.insert(include_paths, include_dir)
-        end
-        if file.exists(pkgconfig_dir) then
-            table.insert(pkgconfig_paths, pkgconfig_dir)
-        end
-    end
-
-    -- Build env vars
-    local env_vars = {}
-
-    -- PATH (mise appends this properly)
-    for _, p in ipairs(bin_paths) do
-        table.insert(env_vars, { key = "PATH", value = p })
-    end
-
-    -- Colon-separated library paths
-    if #lib_paths > 0 then
-        local lib_joined = table.concat(lib_paths, ":")
-        table.insert(env_vars, { key = "LIBRARY_PATH", value = lib_joined })
-        if RUNTIME.osType == "Darwin" then
-            table.insert(env_vars, { key = "DYLD_LIBRARY_PATH", value = lib_joined })
-        elseif RUNTIME.osType == "Linux" then
-            table.insert(env_vars, { key = "LD_LIBRARY_PATH", value = lib_joined })
-        end
-    end
-
-    -- Colon-separated include paths
-    if #include_paths > 0 then
-        local include_joined = table.concat(include_paths, ":")
-        table.insert(env_vars, { key = "C_INCLUDE_PATH", value = include_joined })
-        table.insert(env_vars, { key = "CPLUS_INCLUDE_PATH", value = include_joined })
-    end
-
-    -- Colon-separated pkg-config paths
-    if #pkgconfig_paths > 0 then
-        table.insert(env_vars, { key = "PKG_CONFIG_PATH", value = table.concat(pkgconfig_paths, ":") })
-    end
-
-    -- Space-separated compiler/linker flags
-    if #lib_paths > 0 then
-        local ldflags = {}
-        for _, p in ipairs(lib_paths) do
-            table.insert(ldflags, "-L" .. p)
-        end
-        table.insert(env_vars, { key = "LDFLAGS", value = table.concat(ldflags, " ") })
-    end
-
-    if #include_paths > 0 then
-        local cppflags = {}
-        for _, p in ipairs(include_paths) do
-            table.insert(cppflags, "-I" .. p)
-        end
-        table.insert(env_vars, { key = "CPPFLAGS", value = table.concat(cppflags, " ") })
-    end
-
-    return {
-        env_vars = env_vars,
+    local env_vars = {
+        { key = "ZEROBREW_DIR",    value = file.join_path(xdg_data_home, "zerobrew") },
+        { key = "ZEROBREW_BIN",    value = file.join_path(xdg_bin_home, "zerobrew", "bin") },
+        { key = "ZEROBREW_ROOT",   value = install_path },
+        { key = "ZEROBREW_PREFIX", value = prefix_path },
+        { key = "PATH",            value = bin_path },
     }
+
+    -- pkg-config path
+    local pkgconfig_path = file.join_path(prefix_path, "lib", "pkgconfig")
+    if file.exists(pkgconfig_path) then
+        table.insert(env_vars, { key = "PKG_CONFIG_PATH", value = pkgconfig_path })
+    end
+
+    -- library paths
+    local lib_path = file.join_path(prefix_path, "lib")
+    if file.exists(lib_path) then
+        table.insert(env_vars, { key = "LIBRARY_PATH", value = lib_path })
+        if RUNTIME.osType == "Darwin" then
+            table.insert(env_vars, { key = "DYLD_LIBRARY_PATH", value = lib_path })
+        elseif RUNTIME.osType == "Linux" then
+            table.insert(env_vars, { key = "LD_LIBRARY_PATH", value = lib_path })
+        end
+    end
+
+    -- include paths for development headers
+    local include_path = file.join_path(prefix_path, "include")
+    if file.exists(include_path) then
+        table.insert(env_vars, { key = "C_INCLUDE_PATH",     value = include_path })
+        table.insert(env_vars, { key = "CPLUS_INCLUDE_PATH", value = include_path })
+    end
+
+    -- SSL/TLS certificates (mirrors `zb init` ca-certificates logic)
+    local cert_candidates = {
+        file.join_path(prefix_path, "opt", "ca-certificates", "share", "ca-certificates", "cacert.pem"),
+        file.join_path(prefix_path, "etc", "ca-certificates", "cacert.pem"),
+        file.join_path(prefix_path, "etc", "openssl", "cert.pem"),
+        file.join_path(prefix_path, "share", "ca-certificates", "cacert.pem"),
+    }
+    for _, cert_file in ipairs(cert_candidates) do
+        if file.exists(cert_file) then
+            table.insert(env_vars, { key = "CURL_CA_BUNDLE", value = cert_file })
+            table.insert(env_vars, { key = "SSL_CERT_FILE",  value = cert_file })
+            break
+        end
+    end
+
+    local cert_dir_candidates = {
+        file.join_path(prefix_path, "etc", "ca-certificates"),
+        file.join_path(prefix_path, "etc", "openssl", "certs"),
+        file.join_path(prefix_path, "share", "ca-certificates"),
+    }
+    for _, cert_dir in ipairs(cert_dir_candidates) do
+        if file.exists(cert_dir) then
+            table.insert(env_vars, { key = "SSL_CERT_DIR", value = cert_dir })
+            break
+        end
+    end
+
+    return { env_vars = env_vars }
 end
